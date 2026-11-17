@@ -16,6 +16,8 @@
 # Misc
 .DS_Store
 *.pem
+*.tmp*
+data/*.tmp*
 
 # Local env files
 .env*.local
