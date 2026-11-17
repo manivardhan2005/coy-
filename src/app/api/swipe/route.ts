@@ -6,29 +6,42 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { profileId, action } = body as { profileId: string; action: SwipeAction; userId?: string };
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: 'Malformed JSON payload.' },
+        { status: 400 }
+      );
+    }
+
+    const { profileId, action } = (body || {}) as {
+      profileId?: unknown;
+      action?: unknown;
+      userId?: unknown;
+    };
+
+    // STRICT INPUT VALIDATION: Prevents malformed or non-string inputs from touching storage
+    if (
+      typeof profileId !== 'string' ||
+      profileId.trim().length === 0 ||
+      typeof action !== 'string' ||
+      !['like', 'pass'].includes(action)
+    ) {
+      return NextResponse.json(
+        {
+          error: "Invalid request payload. 'profileId' must be a non-empty string, and 'action' must be 'like' or 'pass'."
+        },
+        { status: 400 }
+      );
+    }
 
     // SECURITY: Single-tenant session guarantee.
-    // Client-supplied `userId` is strictly ignored; actor identity is derived from verified server session.
-    if (!profileId || !action) {
-      return NextResponse.json(
-        { error: 'Missing required fields: profileId and action are required.' },
-        { status: 400 }
-      );
-    }
+    // Client-supplied `userId` is strictly ignored; actor identity is bound to verified server session.
+    const result = await recordSwipeSafe(profileId.trim(), action as SwipeAction);
 
-    if (action !== 'like' && action !== 'pass') {
-      return NextResponse.json(
-        { error: `Invalid action '${action}'. Must be 'like' or 'pass'.` },
-        { status: 400 }
-      );
-    }
-
-    // Execute through serialized transaction queue
-    const result = await recordSwipeSafe(profileId, action);
-
-    // Handle duplicate swipe attempt (Idempotency / State Invariant)
+    // Duplicate swipe rejection (Idempotency / State Invariant)
     if (result.alreadySwiped) {
       return NextResponse.json(
         { error: result.message, alreadySwiped: true },
@@ -42,9 +55,9 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json(result, { status: 200 });
   } catch (error) {
-    console.error('Error recording swipe:', error);
+    console.error('Unhandled error in POST /api/swipe:', error);
     return NextResponse.json(
-      { error: 'Internal server error processing swipe' },
+      { error: 'Internal server error processing swipe: persistence or server failure.' },
       { status: 500 }
     );
   }

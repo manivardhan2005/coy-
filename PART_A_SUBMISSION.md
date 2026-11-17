@@ -56,25 +56,27 @@ In pure double-blind matching, the primary failure mode is **Asymmetric Inertia*
 
 #### 2. User-Level Differential Privacy ($\epsilon$-DP) for Count Reporting:
 
-##### Sensitivity Qualification:
-- **Per-Target Scalar Query Sensitivity:** When evaluating the incoming count query for a single individual target $u$:
+##### Sensitivity Analysis:
+- **Per-Target Scalar Query Sensitivity:** When evaluating the incoming count query for a single target $u$:
   $$q_u: \mathcal{D} \to \mathbb{N}$$
-  Because Coy restricts each user to declaring at most **one** active crush on any specific target, the scalar sensitivity is strictly:
+  Because Coy limits each user to at most **one** active crush on any specific target, the scalar sensitivity of $q_u$ is strictly:
   $$\Delta f_{\text{scalar}} = 1$$
-- **Global Vector Query Sensitivity:** If the system evaluates a simultaneous vector release across all $N$ campus users $Q(\mathcal{D}) = (q_{u_1}, \dots, q_{u_N})$, a user with $S=5$ active slots can affect at most 5 entries in the vector, resulting in an $L_1$ global sensitivity of:
+- **Cross-Target Global Vector Sensitivity:** If the system evaluates a simultaneous vector across all campus targets $Q(\mathcal{D}) = (q_{u_1}, \dots, q_{u_N})$, a user with $S=5$ active slots can contribute to at most 5 distinct targets. Thus, the global $L_1$ vector sensitivity is:
   $$\Delta_1 Q = S = 5$$
-  Our system architecture evaluates queries **per-target independently**, budgeting privacy slices on a per-target basis rather than publishing global uncoordinated vector releases.
 
-##### Formal Privacy Accounting (Sparse Vector Technique & Epoch Budgeting):
-- **Semester Privacy Budget:** Each user is allocated an epoch privacy budget:
-  $$\epsilon_{\text{total}} = 1.0, \quad \delta = 10^{-5}$$
-  spanning a standard university semester term (60 days).
-- **Sparse Vector Release Protocol:**
-  1. Counts are not released continuously. Instead, the backend queries whether the incoming count has crossed a step threshold $T \in \{3, 5, 8\}$ using the **Sparse Vector Technique (SVT / NumericSparse)**.
-  2. A noisy threshold $\tilde{T} = T + \text{Lap}(2/\epsilon_1)$ is initialized per epoch.
-  3. Periodic checks add noise $\nu_i \sim \text{Lap}(4/\epsilon_2)$ to the true count. Below-threshold negative checks pay only $\epsilon_2$ under advanced composition.
-  4. Once a threshold is crossed, a coarse noisy bucket label (*"Around 3 admirers"*, *"5+ admirers"*) is published and locked.
-- **Budget Exhaustion Protocol:** Once a target's semester budget $\epsilon_{\text{total}}$ is exhausted, automated count updates halt immediately. The client interface freezes on the last published bucket until the next semester epoch reset.
+##### Proposed Privacy-Budget Allocation Strategy:
+Running independent per-target queries does not bypass privacy composition. An active user declaring up to 5 crushes participates in up to 5 target queries; under standard composition, the privacy losses accumulate across:
+1. Multiple target queries (up to $S=5$).
+2. Multiple hint category evaluations.
+3. Repeated release epochs over time.
+
+To ensure a rigorous user-level guarantee ($\epsilon_{\text{user}} \le 1.0$), we propose the following budget allocation strategy:
+- **Per-Target Query Budget Slicing:** Each individual target query is allocated a fractional sub-budget:
+  $$\epsilon_u \le \frac{\epsilon_{\text{user}}}{S} = \frac{1.0}{5} = 0.20$$
+  ensuring that even in the worst-case scenario where all 5 targets of a user query their counts, the cumulative user-level privacy loss is strictly bounded under $\epsilon_{\text{user}} = 1.0$.
+- **Sparse Vector Release (SVT) within Epoch:** Within each target's allocated budget slice, counts are not released on demand. Instead, the backend uses thresholded noisy testing ($T \in \{3, 5, 8\}$) where negative checks consume minimal budget under advanced composition.
+- **Budget Exhaustion Protocol:** When a target's allocated budget slice is consumed, count updates halt and the client remains frozen on the last published coarse bucket until the next semester epoch reset.
+- *Production Engineering Note:* In a production deployment at scale, this strategy would be managed by a centralized privacy accountant (e.g., using Rényi Differential Privacy or Zero-Concentrated DP) rather than relying solely on operational cooldown heuristics.
 
 #### 3. Temporal Cooldown & Historical Intersection Prevention:
 - **The Threat:** Even if only one hint is active at a time, a user might remember yesterday's hint (*"Someone in Badminton Club"*) and compare it to today's hint (*"Someone graduating in 2026"*), intersecting them to isolate an individual.

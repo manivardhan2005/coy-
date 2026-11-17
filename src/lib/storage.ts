@@ -10,12 +10,14 @@ const DB_FILE = path.join(DATA_DIR, 'storage.json');
 let memoryCache: StorageData | null = null;
 let lastDiskMtime: number = 0;
 
-// Simple in-process mutex queue to guarantee atomic sequential transactions
-let transactionQueue = Promise.resolve();
+// In-process mutex queue for single-instance transaction serialization
+// NOTE: For multi-instance / serverless production setups, a database (e.g. SQLite/PostgreSQL)
+// with native ACID row locks and unique constraints is required.
+let transactionQueue: Promise<unknown> = Promise.resolve();
 
 function sanitizeProfile(profile: Profile): PublicProfile {
   // STRICT PRIVACY GUARANTEE: Never reveal who has liked the user unless it is mutual!
-  // Strip out `hasLikedUser` so it cannot be inspected in client devtools or network tab.
+  // Strip out `hasLikedUser` at the database boundary.
   const { hasLikedUser, ...publicProfile } = profile;
   return publicProfile;
 }
@@ -38,7 +40,6 @@ export function loadData(): StorageData {
 
     if (fs.existsSync(DB_FILE)) {
       const stats = fs.statSync(DB_FILE);
-      // If file changed on disk or cache is empty, re-read
       if (!memoryCache || stats.mtimeMs > lastDiskMtime) {
         const content = fs.readFileSync(DB_FILE, 'utf-8');
         const parsed = JSON.parse(content) as StorageData;
@@ -65,19 +66,30 @@ export function loadData(): StorageData {
   }
 }
 
+/**
+ * Persists data to disk using atomic temporary file + rename.
+ * PROPAGATES errors: Never swallows write failures so API callers know if data was committed.
+ */
 export function saveData(data: StorageData): void {
-  memoryCache = data;
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+
+  const tempFile = `${DB_FILE}.tmp.${Date.now()}.${Math.random().toString(36).substring(2, 7)}`;
+
   try {
-    if (!fs.existsSync(DATA_DIR)) {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-    }
-    // Atomic write pattern: write to tmp file then rename to avoid corruption
-    const tempFile = `${DB_FILE}.tmp.${Date.now()}.${Math.random().toString(36).substring(2, 7)}`;
     fs.writeFileSync(tempFile, JSON.stringify(data, null, 2), 'utf-8');
     fs.renameSync(tempFile, DB_FILE);
+    // Only update memory cache AFTER successful disk commit
+    memoryCache = data;
     lastDiskMtime = fs.statSync(DB_FILE).mtimeMs;
   } catch (error) {
-    console.error('Failed to persist storage to disk:', error);
+    // Clean up orphan temp file if rename failed
+    if (fs.existsSync(tempFile)) {
+      try { fs.unlinkSync(tempFile); } catch {}
+    }
+    console.error('CRITICAL: Disk persistence failed in saveData:', error);
+    throw new Error(`STORAGE_WRITE_FAILURE: ${(error as Error).message}`);
   }
 }
 
@@ -102,11 +114,12 @@ export function getFeed(): { profiles: PublicProfile[]; count: number; remaining
 }
 
 /**
- * POST /swipe service
+ * POST /swipe core business logic
  * Enforces:
- * 1. Duplicate swipe prevention (returns error if already swiped)
+ * 1. Duplicate swipe prevention (returns HTTP 409 error if already swiped)
  * 2. Exactly-once idempotent match creation
  * 3. Double-blind mutual verification
+ * 4. Transactional rollback if disk persistence fails
  */
 export function recordSwipe(profileId: string, action: SwipeAction): SwipeResponse {
   const data = loadData();
@@ -121,7 +134,7 @@ export function recordSwipe(profileId: string, action: SwipeAction): SwipeRespon
     };
   }
 
-  // 1. DUPLICATE SWIPE PREVENTION
+  // 1. DUPLICATE SWIPE PREVENTION (State Invariant)
   if (data.swipes[profileId]) {
     return {
       success: false,
@@ -132,8 +145,15 @@ export function recordSwipe(profileId: string, action: SwipeAction): SwipeRespon
     };
   }
 
-  // Record the swipe timestamp and action
-  data.swipes[profileId] = {
+  // Clone current state for rollback safety
+  const clonedData: StorageData = {
+    ...data,
+    swipes: { ...data.swipes },
+    matches: [...data.matches]
+  };
+
+  // Record the swipe
+  clonedData.swipes[profileId] = {
     profileId,
     action,
     timestamp: new Date().toISOString()
@@ -148,22 +168,23 @@ export function recordSwipe(profileId: string, action: SwipeAction): SwipeRespon
     matchedProfile = sanitizeProfile(profile);
 
     // 2. EXACTLY-ONCE IDEMPOTENT MATCH CREATION
-    // Deterministic composite ID prevents duplicate entries
-    const deterministicMatchId = `match_${[data.currentUserId, profile.id].sort().join('_')}`;
-    const alreadyMatched = data.matches.some(m => m.id === deterministicMatchId || m.profileId === profile.id);
+    const deterministicMatchId = `match_${[clonedData.currentUserId, profile.id].sort().join('_')}`;
+    const alreadyMatched = clonedData.matches.some(
+      m => m.id === deterministicMatchId || m.profileId === profile.id
+    );
 
     if (!alreadyMatched) {
-      const newMatch: MatchRecord = {
+      clonedData.matches.unshift({
         id: deterministicMatchId,
         profileId: profile.id,
         profile: matchedProfile,
         matchedAt: new Date().toISOString()
-      };
-      data.matches.unshift(newMatch);
+      });
     }
   }
 
-  saveData(data);
+  // ATOMIC PERSISTENCE: If disk write fails, throws error and avoids reporting false success
+  saveData(clonedData);
 
   return {
     success: true,
@@ -174,31 +195,24 @@ export function recordSwipe(profileId: string, action: SwipeAction): SwipeRespon
 }
 
 /**
- * Thread-safe / transaction-safe swipe wrapper
+ * Error-recovering in-process serialized transaction queue
+ * Guarantees subsequent swipe operations execute even if an earlier transaction fails.
  */
-export async function recordSwipeSafe(profileId: string, action: SwipeAction): Promise<SwipeResponse> {
-  const result = await new Promise<SwipeResponse>((resolve) => {
-    transactionQueue = transactionQueue.then(() => {
-      try {
-        const res = recordSwipe(profileId, action);
-        resolve(res);
-      } catch (err) {
-        console.error('Error in recordSwipeSafe:', err);
-        resolve({
-          success: false,
-          action,
-          matched: false,
-          message: 'Internal transaction error'
-        });
-      }
-    });
-  });
-  return result;
+export function recordSwipeSafe(profileId: string, action: SwipeAction): Promise<SwipeResponse> {
+  const operation = transactionQueue.then(() => recordSwipe(profileId, action));
+
+  // Error recovery: always chain undefined so failed promises don't wedge the queue
+  transactionQueue = operation.then(
+    () => undefined,
+    () => undefined
+  );
+
+  return operation;
 }
 
 /**
  * GET /matches service
- * Returns mutual matches for the user.
+ * Returns mutual matches for the user, strictly sanitized.
  */
 export function getMatches(): { matches: MatchRecord[]; count: number } {
   const data = loadData();
