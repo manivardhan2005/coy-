@@ -4,8 +4,9 @@ import { resetData } from '@/lib/storage';
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: NextRequest) {
-  // Production protection: In production, the reset endpoint is disabled by default.
-  // If explicitly allowed via ENABLE_DEMO_RESET=true, it still requires a matching DEMO_RESET_SECRET header if defined.
+  // Production security: The reset endpoint is disabled by default in production.
+  // If explicitly enabled for a controlled demo, requests must pass server-side secret validation.
+  // The secret must never be exposed to client-side code.
   if (process.env.NODE_ENV === 'production') {
     if (process.env.ENABLE_DEMO_RESET !== 'true') {
       return NextResponse.json(
@@ -15,14 +16,13 @@ export async function POST(request: NextRequest) {
     }
 
     const secret = process.env.DEMO_RESET_SECRET;
-    if (secret) {
-      const authHeader = request.headers.get('x-demo-reset-secret');
-      if (authHeader !== secret) {
-        return NextResponse.json(
-          { error: 'Unauthorized: Invalid or missing demo reset authorization secret.' },
-          { status: 401 }
-        );
-      }
+    const authHeader = request.headers.get('x-demo-reset-secret');
+
+    if (!secret || authHeader !== secret) {
+      return NextResponse.json(
+        { error: 'Unauthorized: Demo reset in production requires a valid server-side authorization secret.' },
+        { status: 401 }
+      );
     }
   }
 

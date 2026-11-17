@@ -11,10 +11,10 @@
 This report documents the implementation, its design invariants, and the verification results obtained in the development environment for the **Coy SDE Intern Assignment** across both Part A (Systems Design & Privacy Modeling) and Part B (Mobile-First Next.js Discover Tab).
 
 ### Development Verification State:
-- **Test Suite:** `13/13 passing` via `npm test` ($< 1\text{s}$)
+- **Test Suite:** 13/13 passing via `npm test` (< 1s)
 - **Production Build:** `Next.js 14.2.35` clean compilation via `npm run build`
 - **Double-Blind Invariant:** Zero leakage of `hasLikedUser` across all client payloads
-- **State Invariant:** Duplicate swipes rejected with `alreadySwiped: true` and HTTP `409 Conflict` in API route
+- **State Invariant:** Duplicate swipes rejected with `alreadySwiped: true` (mapped to HTTP 409 Conflict in API route)
 - **Concurrency Safety:** In-process transaction serialization with atomic rollback on disk write failure
 
 ---
@@ -25,8 +25,13 @@ This report documents the implementation, its design invariants, and the verific
 In [src/lib/storage.ts](./src/lib/storage.ts), the transaction queue guarantees subsequent operations execute even if an earlier transaction fails:
 
 ```typescript
-export function recordSwipeSafe(profileId: string, action: SwipeAction): Promise<SwipeResponse> {
-  const operation = transactionQueue.then(() => recordSwipe(profileId, action));
+export function recordSwipeSafe(
+  profileId: string,
+  action: SwipeAction
+): Promise<SwipeResponse> {
+  const operation = transactionQueue.then(() =>
+    recordSwipe(profileId, action)
+  );
 
   // Error recovery: always chain undefined so failed promises don't wedge the queue
   transactionQueue = operation.then(
@@ -75,7 +80,7 @@ export function saveData(data: StorageData): void {
 
 ### D. Strict Input Validation & Demo Endpoint Protection
 - **Input Validation ([src/app/api/swipe/route.ts](./src/app/api/swipe/route.ts)):** Rejects non-string profile IDs, empty strings, and invalid action strings with `HTTP 400 Bad Request`.
-- **Demo Endpoint Protection ([src/app/api/reset/route.ts](./src/app/api/reset/route.ts)):** In production environments (`NODE_ENV === 'production'`), the reset endpoint is automatically disabled unless `ENABLE_DEMO_RESET=true` is explicitly provided, with optional `DEMO_RESET_SECRET` header validation.
+- **Demo Endpoint Protection ([src/app/api/reset/route.ts](./src/app/api/reset/route.ts)):** The reset endpoint is disabled by default in production. If explicitly enabled for a controlled demo (`ENABLE_DEMO_RESET=true`), requests must also pass server-side secret validation (`DEMO_RESET_SECRET`). The secret must never be exposed to client-side code.
 
 ---
 
@@ -85,14 +90,14 @@ The automated test suite in [src/tests/test-backend-logic.mjs](./src/tests/test-
 
 | Test Case | Description | Scope & Invariant Verified |
 | :--- | :--- | :--- |
-| **Test 1** | Seed Profile Data | $\ge 30$ mock profiles with complete schema |
+| **Test 1** | Seed Profile Data | ≥ 30 mock profiles with complete schema |
 | **Test 2** | Double-Blind Invariant | `hasLikedUser` stripped from all `/feed` items |
 | **Test 3** | Pre-Seeded Likes | 12 profiles pre-seeded with secret likes for demo |
 | **Test 4** | Pass Permanence | Passed profiles permanently excluded from feed |
 | **Test 5** | Unilateral Like | Liking non-liker returns `matched: false` |
 | **Test 6** | Mutual Match Trigger | Liking pre-liker returns `matched: true` + sanitized profile |
-| **Test 7** | Sequential Duplicate Rejection | Re-swiping same profile returns `alreadySwiped: true` (mapped to HTTP 409 in route) |
-| **Test 8** | **Concurrent Duplicate Swipes** | Simultaneous `Promise.all` calls result in **exactly 1 success** and **1 conflict** |
+| **Test 7** | Sequential Duplicate Rejection | Storage engine returns `alreadySwiped: true` (mapped to HTTP 409 in route) |
+| **Test 8** | **Concurrent Duplicate Swipes** | Concurrent storage-operation verification (exactly 1 success, 1 rejected with `alreadySwiped: true`) |
 | **Test 9** | **Disk Write Failure Rollback** | Simulated IO failure rejects promise and rolls back memory state |
 | **Test 10** | **Queue Error Recovery** | Subsequent operation succeeds after an intentional failure |
 | **Test 11** | Match Idempotency | Exactly one match record created per mutual pair |
@@ -106,7 +111,7 @@ The automated test suite in [src/tests/test-backend-logic.mjs](./src/tests/test-
 1. **Scalar vs. Global Sensitivity:**
    - Scalar per-target sensitivity: $\Delta f_{\text{scalar}} = 1$.
    - Global multi-target vector sensitivity: $\Delta_1 Q = S = 5$.
-   - Proposed budgeting strategy: Target queries are allocated sub-budgets, with a centralized privacy accountant enforcing the global $\epsilon_{\text{user}} \le 1.0$ limit across all queries and epochs.
+   - A centralized privacy accountant would allocate query-level privacy budgets and enforce a cumulative user-level privacy guarantee of $\epsilon_{\text{user}} \le 1.0$ across releases and epochs, subject to a formally specified composition mechanism and contribution bounds.
 2. **Sparse Vector Thresholding:**
    - Threshold testing ($T \in \{3, 5, 8\}$) limits privacy expenditure over time.
    - Budget exhaustion freezes hint display at last valid noisy bucket.
