@@ -67,6 +67,32 @@ export function loadData(): StorageData {
 }
 
 /**
+ * Windows-safe atomic rename with retry/copy fallback.
+ * Prevents transient EPERM/EBUSY errors caused by OneDrive sync or antivirus scanners.
+ */
+function atomicRenameSync(source: string, target: string, maxRetries = 5): void {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      fs.renameSync(source, target);
+      return;
+    } catch (err: any) {
+      if ((err.code === 'EPERM' || err.code === 'EBUSY') && i < maxRetries - 1) {
+        const start = Date.now();
+        while (Date.now() - start < 30 * (i + 1)) {}
+      } else {
+        try {
+          fs.copyFileSync(source, target);
+          fs.unlinkSync(source);
+          return;
+        } catch {
+          throw err;
+        }
+      }
+    }
+  }
+}
+
+/**
  * Persists data to disk using atomic temporary file + rename.
  * PROPAGATES errors: Never swallows write failures so API callers know if data was committed.
  */
@@ -79,12 +105,11 @@ export function saveData(data: StorageData): void {
 
   try {
     fs.writeFileSync(tempFile, JSON.stringify(data, null, 2), 'utf-8');
-    fs.renameSync(tempFile, DB_FILE);
+    atomicRenameSync(tempFile, DB_FILE);
     // Only update memory cache AFTER successful disk commit
     memoryCache = data;
     lastDiskMtime = fs.statSync(DB_FILE).mtimeMs;
   } catch (error) {
-    // Clean up orphan temp file if rename failed
     if (fs.existsSync(tempFile)) {
       try { fs.unlinkSync(tempFile); } catch {}
     }

@@ -20,6 +20,28 @@ function initTestStore() {
   };
 }
 
+function atomicRenameSync(source, target, maxRetries = 5) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      fs.renameSync(source, target);
+      return;
+    } catch (err) {
+      if ((err.code === 'EPERM' || err.code === 'EBUSY') && i < maxRetries - 1) {
+        const start = Date.now();
+        while (Date.now() - start < 30 * (i + 1)) {}
+      } else {
+        try {
+          fs.copyFileSync(source, target);
+          fs.unlinkSync(source);
+          return;
+        } catch {
+          throw err;
+        }
+      }
+    }
+  }
+}
+
 // Storage Engine with Error Recovery and Atomic Persistence
 class TestStorageEngine {
   constructor() {
@@ -33,9 +55,9 @@ class TestStorageEngine {
       throw new Error('MOCK_DISK_IO_FAILURE: Disk is read-only or out of space');
     }
     fs.mkdirSync(path.dirname(TEST_DB_PATH), { recursive: true });
-    const tempFile = `${TEST_DB_PATH}.tmp.${Date.now()}`;
+    const tempFile = `${TEST_DB_PATH}.tmp.${Date.now()}.${Math.random().toString(36).substring(2, 6)}`;
     fs.writeFileSync(tempFile, JSON.stringify(this.data, null, 2), 'utf8');
-    fs.renameSync(tempFile, TEST_DB_PATH);
+    atomicRenameSync(tempFile, TEST_DB_PATH);
   }
 
   load() {
