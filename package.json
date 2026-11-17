@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "node src/tests/test-backend-logic.mjs"
+    "test": "node --experimental-strip-types src/tests/test-backend-logic.mjs"
   },
   "dependencies": {
     "canvas-confetti": "^1.9.4",

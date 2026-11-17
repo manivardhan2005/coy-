@@ -1,5 +1,5 @@
-import { Profile } from '../types';
-import rawProfiles from './profiles.json';
+import type { Profile } from '../types';
+import rawProfiles from './profiles.json' with { type: 'json' };
 
 export const SEED_PROFILES: Profile[] = rawProfiles as Profile[];
 

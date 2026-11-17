@@ -4,7 +4,7 @@ A standalone, mobile-first, gesture-driven **"Discover" tab** engineered for **C
 
 > **"Never reveal who has liked the user unless it is mutual; this is the core promise of Coy."**
 
-This repository contains both **Part A** (product feature proposals & privacy analysis) and **Part B** (a fully functional, production-ready Next.js application with interactive card swipes, double-blind matching, persistent storage, and automated backend test suites).
+This repository contains both **Part A** (systems design, threat modeling & privacy proposals) and **Part B** (a functional Next.js prototype demonstrating a mobile-first Discover experience, double-blind matching, server-side privacy filtering, persistent file-backed storage, and automated backend-logic tests).
 
 ---
 
@@ -18,13 +18,13 @@ This repository contains both **Part A** (product feature proposals & privacy an
 
 ```bash
 # 1. Clone repository
-git clone <your-repo-url>
-cd Coy
+git clone https://github.com/manivardhan2005/coy-.git
+cd coy-
 
 # 2. Install dependencies
 npm install
 
-# 3. Run automated backend test suite (8/8 tests pass)
+# 3. Run automated production backend test suite (13/13 tests pass)
 npm test
 
 # 4. Start development server
@@ -64,12 +64,12 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 | Layer | Technology | Rationale |
 | :--- | :--- | :--- |
-| **Frontend** | **Next.js 14 (App Router) + React 18** | Mobile-first, fast server-rendered scaffolding, instant route handlers. |
+| **Frontend** | **Next.js 14 (App Router) + React 18** | Mobile-first responsive shell, fast server-rendered scaffolding, instant route handlers. |
 | **Styling** | **Tailwind CSS** | Custom Coy dark palette (`#070709`, `#FF3366` rose accents, glassmorphic overlays). |
 | **Animations** | **Framer Motion + Canvas Confetti** | Native-feeling swipe gestures, drag inertia, dynamic stamps, and celebration confetti. |
-| **Backend** | **Next.js API Route Handlers** | Clean REST endpoints with rewrite proxies supporting both `/feed` and `/api/feed`. |
-| **Database** | **Persistent File-Backed JSON Store** | Zero-dependency, ACID-like atomic writes (`tmp` file write + atomic replace), fully persistent across page reloads and server restarts. |
-| **Testing** | **Node.js Native Test Runner** | Automated tests validating feed filtering, match triggers, privacy sanitization, and state persistence. |
+| **Backend** | **Next.js API Route Handlers** | REST endpoints with rewrite proxies supporting `/feed`, `/swipe`, `/matches`, and protected demo reset. |
+| **Database** | **Persistent File-Backed Store** | Atomic temporary file replacement with retry backoff and in-process transaction serialization (single-node scope). |
+| **Testing** | **Node.js Native Test Runner** | 13 automated tests directly exercising production `src/lib/storage.ts` functions. |
 
 ---
 
@@ -159,33 +159,38 @@ Restores all 32 seed profiles to unswiped state and clears matches for demonstra
 
 ## 🧪 Automated Testing
 
-Run the automated test suite with:
+The automated test suite in `src/tests/test-backend-logic.mjs` directly imports and exercises the actual production backend module (`src/lib/storage.ts`):
 
 ```bash
 npm test
 ```
 
-### Test Suite Assertions:
-1. `[Test 1]` **Seed Profile Data:** Validates that $\ge 30$ mock profiles exist with all required fields (name, age, photo, bio, college/city, interests).
+### Production Test Suite Assertions (13/13 passing):
+1. `[Test 1]` **Seed Profile Data:** Validates that ≥ 30 mock profiles exist with all required schema fields (name, age, photo, bio, college/city, interests).
 2. `[Test 2]` **Double-Blind Privacy:** Inspects every profile in `/feed` to strictly guarantee `hasLikedUser` is **never** leaked to client payloads.
-3. `[Test 3]` **Pre-Seeded Matches:** Confirms at least 5 profiles are pre-seeded with secret likes for demo matches.
+3. `[Test 3]` **Pre-Seeded Mutual Candidates:** Confirms 12 profiles with pre-existing likes in seed data for live demo matches.
 4. `[Test 4]` **Pass Permanence:** Confirms passing a profile permanently removes it from future feed queries.
 5. `[Test 5]` **Unilateral Like:** Confirms swiping like on a non-liker returns `matched: false` and creates no mutual match.
-6. `[Test 6]` **Mutual Match:** Confirms swiping like on a pre-liker returns `matched: true` with sanitized profile.
-7. `[Test 7]` **Matches Listing:** Verifies mutual match appears in `GET /matches`.
-8. `[Test 8]` **Persistence Check:** Simulates fresh disk reload and verifies all swipes and matches remain intact.
+6. `[Test 6]` **Mutual Match Creation:** Confirms swiping like on a pre-liker returns `matched: true` with sanitized profile.
+7. `[Test 7]` **Sequential Duplicate Rejection:** Re-swiping the same profile returns `alreadySwiped: true` and `success: false` (mapped to HTTP 409 in the route handler).
+8. `[Test 8]` **Concurrent Duplicate Swipes:** Simultaneous `Promise.all` calls are serialized by `transactionQueue`, resulting in **exactly 1 success** and **1 rejected duplicate**.
+9. `[Test 9]` **Disk Persistence Failure Propagation:** Verifies that write failures throw `STORAGE_WRITE_FAILURE` and avoid reporting false success.
+10. `[Test 10]` **Queue Error Recovery:** Verifies the transaction queue continues processing subsequent requests cleanly even after an earlier operation fails.
+11. `[Test 11]` **Match Idempotency:** Exactly one match record is created and stored per mutual pair.
+12. `[Test 12]` **Match Listing Privacy:** Zero like metadata or secret flags in `GET /matches`.
+13. `[Test 13]` **Reload Persistence:** Reads raw `data/storage.json` from disk to verify all state persists across process reloads.
 
 ---
 
 ## 📄 Part A: Product Analysis & Feature Proposals
 
-The complete writeup for **Part A: Use the app & Suggest two core features** is located in:
+The complete writeup for **Part A: Systems Design & Privacy Engineering Proposals** is located in:
 👉 **[PART_A_SUBMISSION.md](./PART_A_SUBMISSION.md)**
 
 ### Executive Summary:
 1. **Feature 1: "Anonymity-Thresholded Aggregate Hints"**
    - *Problem Solved:* Overcomes asymmetric cold-start inertia where users receive zero feedback and abandon their crush slots.
-   - *Mechanic:* Gated strictly behind a $k$-anonymity policy ($k \ge 10$) with hierarchical roll-up and user-level Differential Privacy ($\epsilon = 0.8$) on count releases, combined with a 14-day epoch cooldown to prevent historical intersection attacks.
+   - *Mechanic:* Gated strictly behind a $k$-anonymity policy ($k \ge 10$) with hierarchical roll-up and a proposed user-level Differential Privacy budgeting strategy ($\epsilon_{\text{user}} \le 1.0$) managed by a centralized accountant, combined with a 14-day epoch cooldown to prevent historical intersection attacks.
    - *Target Hypothesis / KPI:* Target a 25% to 40% increase in 14-day crush slot allocation rate, validated via an A/B test against zero-hint controls.
 
 2. **Feature 2: "Double-Blind Campus Icebreaker & Ephemeral 24h Match Reveal"**

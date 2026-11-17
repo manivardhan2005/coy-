@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
-import { StorageData, PublicProfile, Profile, SwipeAction, MatchRecord, SwipeResponse } from '@/types';
-import { SEED_PROFILES, CURRENT_USER } from '@/data/seedProfiles';
+import type { StorageData, PublicProfile, Profile, SwipeAction, MatchRecord, SwipeResponse } from '../types';
+import { SEED_PROFILES, CURRENT_USER } from '../data/seedProfiles.ts';
 
 const DATA_DIR = path.join(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'storage.json');
@@ -67,8 +67,9 @@ export function loadData(): StorageData {
 }
 
 /**
- * Windows-safe atomic rename with retry/copy fallback.
- * Prevents transient EPERM/EBUSY errors caused by OneDrive sync or antivirus scanners.
+ * Windows-safe atomic rename with transient retry backoff.
+ * Retries on transient EPERM/EBUSY locks (e.g. OneDrive indexing or antivirus scanners).
+ * If all retries fail, it strictly propagates the error to avoid non-atomic partial-write fallbacks.
  */
 function atomicRenameSync(source: string, target: string, maxRetries = 5): void {
   for (let i = 0; i < maxRetries; i++) {
@@ -78,15 +79,9 @@ function atomicRenameSync(source: string, target: string, maxRetries = 5): void 
     } catch (err: any) {
       if ((err.code === 'EPERM' || err.code === 'EBUSY') && i < maxRetries - 1) {
         const start = Date.now();
-        while (Date.now() - start < 30 * (i + 1)) {}
+        while (Date.now() - start < 35 * (i + 1)) {}
       } else {
-        try {
-          fs.copyFileSync(source, target);
-          fs.unlinkSync(source);
-          return;
-        } catch {
-          throw err;
-        }
+        throw err;
       }
     }
   }
