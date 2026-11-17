@@ -6,8 +6,12 @@ import { SEED_PROFILES, CURRENT_USER } from '@/data/seedProfiles';
 const DATA_DIR = path.join(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'storage.json');
 
-// In-memory fallback if filesystem write is restricted, but file is primary
+// Memory cache with disk mtime synchronization
 let memoryCache: StorageData | null = null;
+let lastDiskMtime: number = 0;
+
+// Simple in-process mutex queue to guarantee atomic sequential transactions
+let transactionQueue = Promise.resolve();
 
 function sanitizeProfile(profile: Profile): PublicProfile {
   // STRICT PRIVACY GUARANTEE: Never reveal who has liked the user unless it is mutual!
@@ -27,32 +31,33 @@ function getInitialData(): StorageData {
 }
 
 export function loadData(): StorageData {
-  if (memoryCache) {
-    return memoryCache;
-  }
-
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
 
     if (fs.existsSync(DB_FILE)) {
-      const content = fs.readFileSync(DB_FILE, 'utf-8');
-      const parsed = JSON.parse(content) as StorageData;
-      // Ensure seed profiles integrity if updated
-      if (!parsed.profiles || parsed.profiles.length === 0) {
-        parsed.profiles = SEED_PROFILES;
+      const stats = fs.statSync(DB_FILE);
+      // If file changed on disk or cache is empty, re-read
+      if (!memoryCache || stats.mtimeMs > lastDiskMtime) {
+        const content = fs.readFileSync(DB_FILE, 'utf-8');
+        const parsed = JSON.parse(content) as StorageData;
+        if (!parsed.profiles || parsed.profiles.length === 0) {
+          parsed.profiles = SEED_PROFILES;
+        }
+        memoryCache = parsed;
+        lastDiskMtime = stats.mtimeMs;
       }
-      memoryCache = parsed;
-      return parsed;
+      return memoryCache;
     } else {
       const initial = getInitialData();
       fs.writeFileSync(DB_FILE, JSON.stringify(initial, null, 2), 'utf-8');
       memoryCache = initial;
+      lastDiskMtime = fs.statSync(DB_FILE).mtimeMs;
       return initial;
     }
   } catch (error) {
-    console.error('Failed to read storage file, using in-memory state:', error);
+    console.error('Failed to read storage file, falling back to memory state:', error);
     if (!memoryCache) {
       memoryCache = getInitialData();
     }
@@ -66,10 +71,11 @@ export function saveData(data: StorageData): void {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
-    // Atomic-like write using temp file + rename to prevent race corruption
-    const tempFile = `${DB_FILE}.tmp.${Date.now()}`;
+    // Atomic write pattern: write to tmp file then rename to avoid corruption
+    const tempFile = `${DB_FILE}.tmp.${Date.now()}.${Math.random().toString(36).substring(2, 7)}`;
     fs.writeFileSync(tempFile, JSON.stringify(data, null, 2), 'utf-8');
     fs.renameSync(tempFile, DB_FILE);
+    lastDiskMtime = fs.statSync(DB_FILE).mtimeMs;
   } catch (error) {
     console.error('Failed to persist storage to disk:', error);
   }
@@ -78,7 +84,7 @@ export function saveData(data: StorageData): void {
 /**
  * GET /feed service
  * Returns profiles the logged-in user has NOT yet swiped on.
- * Strips secret flags to preserve double-blind privacy.
+ * Strips secret flags at the database boundary to preserve zero-knowledge privacy.
  */
 export function getFeed(): { profiles: PublicProfile[]; count: number; remainingCount: number } {
   const data = loadData();
@@ -97,7 +103,10 @@ export function getFeed(): { profiles: PublicProfile[]; count: number; remaining
 
 /**
  * POST /swipe service
- * Records a like or pass. If like and profile previously liked user, creates a mutual match.
+ * Enforces:
+ * 1. Duplicate swipe prevention (returns error if already swiped)
+ * 2. Exactly-once idempotent match creation
+ * 3. Double-blind mutual verification
  */
 export function recordSwipe(profileId: string, action: SwipeAction): SwipeResponse {
   const data = loadData();
@@ -112,7 +121,18 @@ export function recordSwipe(profileId: string, action: SwipeAction): SwipeRespon
     };
   }
 
-  // Record the swipe
+  // 1. DUPLICATE SWIPE PREVENTION
+  if (data.swipes[profileId]) {
+    return {
+      success: false,
+      alreadySwiped: true,
+      action,
+      matched: false,
+      message: `Profile '${profileId}' has already been swiped on.`
+    };
+  }
+
+  // Record the swipe timestamp and action
   data.swipes[profileId] = {
     profileId,
     action,
@@ -122,16 +142,19 @@ export function recordSwipe(profileId: string, action: SwipeAction): SwipeRespon
   let isMatch = false;
   let matchedProfile: PublicProfile | undefined = undefined;
 
-  // Mutual match condition: Both liked each other
+  // Mutual match condition: Both parties liked each other
   if (action === 'like' && profile.hasLikedUser) {
     isMatch = true;
     matchedProfile = sanitizeProfile(profile);
 
-    // Check if match already recorded
-    const existingMatch = data.matches.find(m => m.profileId === profileId);
-    if (!existingMatch) {
+    // 2. EXACTLY-ONCE IDEMPOTENT MATCH CREATION
+    // Deterministic composite ID prevents duplicate entries
+    const deterministicMatchId = `match_${[data.currentUserId, profile.id].sort().join('_')}`;
+    const alreadyMatched = data.matches.some(m => m.id === deterministicMatchId || m.profileId === profile.id);
+
+    if (!alreadyMatched) {
       const newMatch: MatchRecord = {
-        id: `match_${profile.id}_${Date.now()}`,
+        id: deterministicMatchId,
         profileId: profile.id,
         profile: matchedProfile,
         matchedAt: new Date().toISOString()
@@ -151,12 +174,39 @@ export function recordSwipe(profileId: string, action: SwipeAction): SwipeRespon
 }
 
 /**
+ * Thread-safe / transaction-safe swipe wrapper
+ */
+export async function recordSwipeSafe(profileId: string, action: SwipeAction): Promise<SwipeResponse> {
+  const result = await new Promise<SwipeResponse>((resolve) => {
+    transactionQueue = transactionQueue.then(() => {
+      try {
+        const res = recordSwipe(profileId, action);
+        resolve(res);
+      } catch (err) {
+        console.error('Error in recordSwipeSafe:', err);
+        resolve({
+          success: false,
+          action,
+          matched: false,
+          message: 'Internal transaction error'
+        });
+      }
+    });
+  });
+  return result;
+}
+
+/**
  * GET /matches service
  * Returns mutual matches for the user.
  */
 export function getMatches(): { matches: MatchRecord[]; count: number } {
   const data = loadData();
-  const matches = data.matches || [];
+  const matches = (data.matches || []).map(m => ({
+    ...m,
+    profile: sanitizeProfile(m.profile as Profile)
+  }));
+
   return {
     matches,
     count: matches.length

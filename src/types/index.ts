@@ -57,6 +57,7 @@ export interface SwipeResponse {
   matched: boolean;
   match?: PublicProfile;
   message?: string;
+  alreadySwiped?: boolean;
 }
 
 export interface MatchesResponse {

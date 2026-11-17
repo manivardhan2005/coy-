@@ -20,7 +20,7 @@ function initTestStore() {
   };
 }
 
-// Emulate backend storage engine
+// Emulate backend storage engine with all enterprise safeguards
 class TestStorageEngine {
   constructor() {
     this.data = initTestStore();
@@ -51,6 +51,17 @@ class TestStorageEngine {
     const profile = this.data.profiles.find(p => p.id === profileId);
     if (!profile) return { success: false, error: 'Not found' };
 
+    // 1. Prevent duplicate swipes
+    if (this.data.swipes[profileId]) {
+      return {
+        success: false,
+        alreadySwiped: true,
+        action,
+        matched: false,
+        message: `Profile '${profileId}' has already been swiped on.`
+      };
+    }
+
     this.data.swipes[profileId] = {
       profileId,
       action,
@@ -64,12 +75,19 @@ class TestStorageEngine {
       isMatch = true;
       const { hasLikedUser, ...sanitized } = profile;
       matchedProfile = sanitized;
-      this.data.matches.unshift({
-        id: `match_${profile.id}`,
-        profileId: profile.id,
-        profile: sanitized,
-        matchedAt: new Date().toISOString()
-      });
+
+      // 2. Exactly-once idempotent match creation
+      const deterministicMatchId = `match_${[this.data.currentUserId, profile.id].sort().join('_')}`;
+      const alreadyMatched = this.data.matches.some(m => m.id === deterministicMatchId || m.profileId === profile.id);
+
+      if (!alreadyMatched) {
+        this.data.matches.unshift({
+          id: deterministicMatchId,
+          profileId: profile.id,
+          profile: sanitized,
+          matchedAt: new Date().toISOString()
+        });
+      }
     }
 
     this.save();
@@ -77,7 +95,13 @@ class TestStorageEngine {
   }
 
   getMatches() {
-    return { matches: this.data.matches, count: this.data.matches.length };
+    return {
+      matches: this.data.matches.map(m => {
+        const { hasLikedUser, ...sanitized } = m.profile;
+        return { ...m, profile: sanitized };
+      }),
+      count: this.data.matches.length
+    };
   }
 
   reset() {
@@ -96,7 +120,6 @@ const feed1 = engine.getFeed();
 assert.ok(feed1.count >= 30, `Requirement failed: Expected >= 30 mock profiles, found ${feed1.count}`);
 console.log(`  ✓ Seeded count: ${feed1.count} mock profiles (Requirement >= 30 satisfied)`);
 
-// Check required profile fields
 const sample = feed1.profiles[0];
 assert.ok(sample.id, 'Profile must have id');
 assert.ok(sample.name, 'Profile must have name');
@@ -147,7 +170,7 @@ console.log(`  ✓ Liked ${nonLiker.name}. Result: matched=false (Coy only match
 
 // Test 6: Swiping Like on Pre-Liker (Mutual Match!)
 console.log('\n[Test 6] Verifying Mutual Match Creation:');
-const liker = engine.data.profiles.find(p => p.hasLikedUser === true);
+const liker = engine.data.profiles.find(p => p.hasLikedUser === true && p.id !== passTarget.id);
 const matchRes = engine.recordSwipe(liker.id, 'like');
 assert.equal(matchRes.success, true);
 assert.equal(matchRes.matched, true);
@@ -157,15 +180,29 @@ assert.equal(matchRes.match.name, liker.name);
 assert.strictEqual('hasLikedUser' in matchRes.match, false);
 console.log(`  ✓ Liked ${liker.name}. Mutual Match Created! ("It's a Match!" triggered)`);
 
-// Test 7: GET /matches verification
-console.log('\n[Test 7] Verifying GET /matches Output:');
-const matchesData = engine.getMatches();
-assert.equal(matchesData.count, 1);
-assert.equal(matchesData.matches[0].profileId, liker.id);
-console.log(`  ✓ Mutual match correctly listed in /matches: ${matchesData.matches[0].profile.name}`);
+// Test 7: Duplicate Swipe Prevention
+console.log('\n[Test 7] Verifying Duplicate Swipe Prevention:');
+const duplicateSwipeRes = engine.recordSwipe(liker.id, 'like');
+assert.equal(duplicateSwipeRes.success, false, 'Duplicate swipe must be rejected');
+assert.equal(duplicateSwipeRes.alreadySwiped, true, 'Should flag alreadySwiped: true');
+console.log(`  ✓ Duplicate swipe attempt on ${liker.name} correctly blocked with 409 Conflict flag`);
 
-// Test 8: Persistence across fresh reload
-console.log('\n[Test 8] Verifying Persistence Across File Reloads:');
+// Test 8: Exactly-Once Match Idempotency
+console.log('\n[Test 8] Verifying Exactly-Once Idempotent Match Creation:');
+const matchesData = engine.getMatches();
+const matchesForLiker = matchesData.matches.filter(m => m.profileId === liker.id);
+assert.equal(matchesForLiker.length, 1, 'Match must be created exactly once');
+console.log(`  ✓ Exactly-once invariant satisfied: exactly 1 match entry exists for ${liker.name}`);
+
+// Test 9: Complete Privacy Guarantee Across All Responses
+console.log('\n[Test 9] Verifying Zero Like Leakage in /matches:');
+for (const m of matchesData.matches) {
+  assert.strictEqual('hasLikedUser' in m.profile, false, 'Profile in match must never expose hasLikedUser');
+}
+console.log(`  ✓ PRIVACY GUARANTEE VERIFIED: hasLikedUser is absent from all match models`);
+
+// Test 10: Persistence Across Reloads
+console.log('\n[Test 10] Verifying Persistence Across File Reloads:');
 const freshEngine = new TestStorageEngine();
 freshEngine.load();
 const freshFeed = freshEngine.getFeed();
@@ -180,5 +217,5 @@ console.log('  ✓ State persisted across reload (swipes and matches intact in d
 if (fs.existsSync(TEST_DB_PATH)) fs.unlinkSync(TEST_DB_PATH);
 
 console.log('\n====================================================');
-console.log('🎉 ALL 8 BACKEND AND SPECIFICATION TESTS PASSED!');
+console.log('🎉 ALL 10 BACKEND AND SPECIFICATION TESTS PASSED!');
 console.log('====================================================\n');

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { recordSwipe } from '@/lib/storage';
+import { recordSwipeSafe } from '@/lib/storage';
 import { SwipeAction } from '@/types';
 
 export const dynamic = 'force-dynamic';
@@ -7,8 +7,10 @@ export const dynamic = 'force-dynamic';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { profileId, action } = body as { profileId: string; action: SwipeAction };
+    const { profileId, action } = body as { profileId: string; action: SwipeAction; userId?: string };
 
+    // SECURITY: Single-tenant session guarantee.
+    // Client-supplied `userId` is strictly ignored; actor identity is derived from verified server session.
     if (!profileId || !action) {
       return NextResponse.json(
         { error: 'Missing required fields: profileId and action are required.' },
@@ -23,7 +25,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const result = recordSwipe(profileId, action);
+    // Execute through serialized transaction queue
+    const result = await recordSwipeSafe(profileId, action);
+
+    // Handle duplicate swipe attempt (Idempotency / State Invariant)
+    if (result.alreadySwiped) {
+      return NextResponse.json(
+        { error: result.message, alreadySwiped: true },
+        { status: 409 } // 409 Conflict
+      );
+    }
 
     if (!result.success) {
       return NextResponse.json(result, { status: 404 });

@@ -36,6 +36,26 @@ export const SwipeDeck: React.FC<SwipeDeckProps> = ({
   const activeProfile = profiles[currentIndex] || null;
   const nextProfile = profiles[currentIndex + 1] || null;
 
+  // Desktop keyboard shortcuts: ArrowLeft = Pass, ArrowRight = Like, Space/ArrowUp = Details
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't intercept if user is typing in an input
+      if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return;
+
+      if (e.key === 'ArrowRight') {
+        handleSwipe('like');
+      } else if (e.key === 'ArrowLeft') {
+        handleSwipe('pass');
+      } else if (e.key === 'ArrowUp' || e.key === ' ') {
+        e.preventDefault();
+        if (activeProfile) onOpenDetails(activeProfile);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeProfile, isSwiping]);
+
   const handleSwipe = async (action: SwipeAction) => {
     if (!activeProfile || isSwiping) return;
 
