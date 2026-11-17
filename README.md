@@ -183,15 +183,15 @@ The complete writeup for **Part A: Use the app & Suggest two core features** is 
 👉 **[PART_A_SUBMISSION.md](./PART_A_SUBMISSION.md)**
 
 ### Executive Summary:
-1. **Feature 1: "Differential-Privacy Mutual Circle Clues" (Zero-Knowledge Proximity Hints)**
-   - *Problem Solved:* Overcomes the asymmetric cold-start inertia where users have 0 feedback and abandon their crush slots.
-   - *Mechanic:* Displays aggregate hints (*"1 secret admirer in Batch of 2025"*) strictly gated behind a $k$-anonymity threshold ($k \ge 5$) to mathematically prevent deanonymization.
-   - *Impact:* Drives massive campus virality and increases slot utilization by +60%.
+1. **Feature 1: "Anonymity-Thresholded Aggregate Hints"**
+   - *Problem Solved:* Overcomes asymmetric cold-start inertia where users receive zero feedback and abandon their crush slots.
+   - *Mechanic:* Gated strictly behind a $k$-anonymity policy ($k \ge 10$) with hierarchical roll-up and user-level Differential Privacy ($\epsilon = 0.8$) on count releases, combined with a 14-day epoch cooldown to prevent historical intersection attacks.
+   - *Target Hypothesis / KPI:* Target a 25% to 40% increase in 14-day crush slot allocation rate, validated via an A/B test against zero-hint controls.
 
 2. **Feature 2: "Double-Blind Campus Icebreaker & Ephemeral 24h Match Reveal"**
    - *Problem Solved:* Solves post-match awkwardness and fear of campus reputation risk ("Match Deadlock").
-   - *Mechanic:* Initiates a 24-hour simultaneous prompt game (*"Best canteen?"*, *"Where did we first meet?"*); answers only unlock once both respond, with graceful soft-expiry if inactive.
-   - *Impact:* Increases match-to-conversation conversion by +65% while preserving dignity.
+   - *Mechanic:* Initiates a 24-hour simultaneous prompt game (*"Best canteen?"*, *"Where did we first meet?"*); answers only unlock once both respond, with graceful soft-expiry if inactive, and a consistent 60-day crush TTL aligned with the college term.
+   - *Target Hypothesis / KPI:* Target a 48-hour conversation initiation rate above 70%, validated via an A/B test against standard blank chat.
 
 ---
 
