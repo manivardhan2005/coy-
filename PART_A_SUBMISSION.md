@@ -40,10 +40,9 @@ In pure double-blind matching, the primary failure mode is **Asymmetric Inertia*
 **Solution:** Surface **aggregate, generalized hints** that provide ambient social proof without leaking individual identity, enforced by strict cohort anonymity guarantees.
 
 ### Privacy Architecture & Guarantees
-To prevent deanonymization, we explicitly decouple and apply two distinct privacy techniques:
 
 ```
-[Incoming Crushes] ──► [Graph Intersection] ──► [k-Anonymity Gate (k >= 10)] ──► [Sparse Vector / ε-DP Noise] ──► [Client Hint]
+[Incoming Crushes] ──► [Graph Intersection] ──► [k-Anonymity Gate (k >= 10)] ──► [SVT / Formal DP Accountant] ──► [Client Hint]
                                                        │
                                             (If cohort < 10, roll up
                                              to Department / University)
@@ -53,21 +52,35 @@ To prevent deanonymization, we explicitly decouple and apply two distinct privac
 - A hint descriptor (e.g., *"Someone in your major"*, *"Someone in your campus club"*) is **only** eligible for display if the underlying cohort size $|C|$ satisfies:
   $$|C| \ge 10$$
 - **Hierarchical Fallback (Generalization):** If a student club has only 4 members, the hint is suppressed at the club tier and automatically rolls up to the Department level ($|C| \ge 10$). If the department has $<10$ students on Coy, it rolls up to the University-wide tier.
-- **Homogeneity Protection (Sub-group Diversity Rule):** To prevent homogeneous grouping attacks (e.g., all 10 members sharing the exact same hostel wing or graduation year), the candidate pool must have no single sub-group representing more than $50\%$ of the cohort. If dominated, the system rolls up to the broader tier.
+- **Homogeneity Protection (Sub-group Diversity Safeguard):** As an operational heuristic against monoculture clusters (e.g., all 10 members sharing the exact same hostel wing or graduation year), no single sub-group may represent more than $50\%$ of the cohort. If dominated, the system rolls up to the broader tier. *(Note: This is an operational defense-in-depth safeguard against homogeneity, distinct from formal statistical diversity metrics).*
 
 #### 2. User-Level Differential Privacy ($\epsilon$-DP) for Count Reporting:
-- **Privacy Unit:** Defined at the **user level**—bounding the effect of any single user adding or removing their crush declarations.
-- **Contribution Bounding:** Because Coy enforces a hard limit on crush slots (e.g., maximum 5 active crushes per user), a single user's presence or absence can change a target's incoming count by at most $\Delta f = 1$.
-- **Composition & Budget Management Across Repeated Releases:**
-  - Re-querying and publishing fresh Laplace noise daily would rapidly exhaust the privacy budget through linear composition ($\sum \epsilon$).
-  - **Mitigation (State-Dependent Threshold Release):** Counts are **not** re-released daily. Instead, the backend uses a thresholding mechanism: counts are grouped into coarse noisy buckets (*"Around 3 admirers"*, *"5+ admirers"*) with an epoch privacy budget $\epsilon_{\text{epoch}} = 1.0$ per semester term.
-  - Updates to the displayed bucket are only triggered if the underlying count crosses a significant threshold ($\ge 2$ change), bounding total annual privacy loss.
+
+##### Sensitivity Qualification:
+- **Per-Target Scalar Query Sensitivity:** When evaluating the incoming count query for a single individual target $u$:
+  $$q_u: \mathcal{D} \to \mathbb{N}$$
+  Because Coy restricts each user to declaring at most **one** active crush on any specific target, the scalar sensitivity is strictly:
+  $$\Delta f_{\text{scalar}} = 1$$
+- **Global Vector Query Sensitivity:** If the system evaluates a simultaneous vector release across all $N$ campus users $Q(\mathcal{D}) = (q_{u_1}, \dots, q_{u_N})$, a user with $S=5$ active slots can affect at most 5 entries in the vector, resulting in an $L_1$ global sensitivity of:
+  $$\Delta_1 Q = S = 5$$
+  Our system architecture evaluates queries **per-target independently**, budgeting privacy slices on a per-target basis rather than publishing global uncoordinated vector releases.
+
+##### Formal Privacy Accounting (Sparse Vector Technique & Epoch Budgeting):
+- **Semester Privacy Budget:** Each user is allocated an epoch privacy budget:
+  $$\epsilon_{\text{total}} = 1.0, \quad \delta = 10^{-5}$$
+  spanning a standard university semester term (60 days).
+- **Sparse Vector Release Protocol:**
+  1. Counts are not released continuously. Instead, the backend queries whether the incoming count has crossed a step threshold $T \in \{3, 5, 8\}$ using the **Sparse Vector Technique (SVT / NumericSparse)**.
+  2. A noisy threshold $\tilde{T} = T + \text{Lap}(2/\epsilon_1)$ is initialized per epoch.
+  3. Periodic checks add noise $\nu_i \sim \text{Lap}(4/\epsilon_2)$ to the true count. Below-threshold negative checks pay only $\epsilon_2$ under advanced composition.
+  4. Once a threshold is crossed, a coarse noisy bucket label (*"Around 3 admirers"*, *"5+ admirers"*) is published and locked.
+- **Budget Exhaustion Protocol:** Once a target's semester budget $\epsilon_{\text{total}}$ is exhausted, automated count updates halt immediately. The client interface freezes on the last published bucket until the next semester epoch reset.
 
 #### 3. Temporal Cooldown & Historical Intersection Prevention:
 - **The Threat:** Even if only one hint is active at a time, a user might remember yesterday's hint (*"Someone in Badminton Club"*) and compare it to today's hint (*"Someone graduating in 2026"*), intersecting them to isolate an individual.
 - **Defense Mechanism:**
-  1. **14-Day Category Cooldown Epoch:** A user is locked to at most one hint category per 14-day epoch. The category does not fluctuate daily.
-  2. **Historical Intersection Guard:** When selecting a new hint category for a user, the backend calculates the intersection of the new candidate cohort with all cohorts served to that user in the past 30 days:
+  1. **14-Day Category Cooldown Epoch:** A user is locked to at most one hint category per 14-day window. The category does not fluctuate daily.
+  2. **Historical Intersection Guard:** When selecting a new candidate hint category, the backend calculates the intersection of the new candidate cohort $C_{\text{new}}$ with all cohorts $C_{\text{historical}}$ served to that user in the past 30 days:
      $$|C_{\text{new}} \cap C_{\text{historical}}| \ge 10$$
      If the intersection cardinality is less than 10, the new candidate hint is suppressed to prevent progressive triangulation.
 
@@ -122,9 +135,9 @@ In collegiate environments, the most fragile stage of interaction is the immedia
 
 | Attack Vector | Threat Scenario | Technical Defense |
 | :--- | :--- | :--- |
-| **Screenshot Leaks & Social Humiliation** | A user matches, takes a screenshot of the peer's responses, and forwards it to campus WhatsApp/Discord groups. | **Social Friction & Accountability Layers:** While client-side environments (web browsers, external physical cameras, rooted/jailbroken devices) cannot cryptographically prevent recording, the application implements: (1) Native OS window protection flags where available (`FLAG_SECURE` on Android); (2) Per-user dynamic steganographic background watermark (User ID + timestamp hash); (3) Dynamic screenshot warning banners. *Explicitly framed as social deterrents, not airtight cryptographic barriers.* |
+| **Screenshot Leaks & Social Humiliation** | A user matches, takes a screenshot of the peer's responses, and forwards it to campus WhatsApp/Discord groups. | **Social Friction & Accountability Layers:** Client-side environments (web browsers, external physical cameras, rooted/jailbroken devices) cannot cryptographically prevent recording. The application implements native OS window protection flags where available (`FLAG_SECURE` on Android), per-user dynamic steganographic background watermarks (User ID + timestamp hash), and screenshot warning banners. *Explicitly framed as social deterrents and audit layers, not absolute cryptographic barriers.* |
 | **Malicious "Dare" Matches** | A user intentionally likes classmates as a joke, intending to mock them once matched. | **Symmetric Vulnerability Barrier:** Because the icebreaker requires active participation before full chat unlocks, malicious users must expose their own answer first, significantly disincentivizing frivolous trolling. |
-| **Instant Regret / Unilateral Exit** | A user matches but immediately feels uncomfortable. | **Silent Ghost Dissolution:** Either party can click *"Discreetly Dissolve"*. The connection disappears from both clients without notifying the other party, reverting the state as if no match had occurred. |
+| **Instant Regret / Unilateral Exit & Safety** | A user matches but immediately feels uncomfortable or harassed. | **Silent Ghost Dissolution with Internal Auditability:** Either party can click *"Discreetly Dissolve"*. The connection immediately vanishes from both client interfaces without notifying the other party. **Internal Audit Safety:** While client-facing state reverts to looking as if no match occurred, an internal audit tombstone record is retained in a restricted Trust & Safety table with RBAC for 180 days to support harassment or stalking investigations. |
 
 ---
 
@@ -141,19 +154,22 @@ In collegiate environments, the most fragile stage of interaction is the immedia
 
 During technical interviews with founders or senior engineers, be prepared to defend the following core architectural decisions:
 
-### Q1: Why do you need both $k$-anonymity and differential privacy?
-> **Answer:** They solve two distinct privacy failure modes. **$k$-Anonymity ($k \ge 10$)** protects the *categorical descriptor* (e.g., "someone in your major"), guaranteeing that the candidate pool is large enough that an individual cannot be singled out by group membership. **Differential Privacy ($\epsilon$-DP)** protects the *aggregate numerical count* over time, ensuring that an adversary observing count changes cannot infer whether a specific target user joined or left the cohort.
+### Q1: Why is scalar sensitivity $\Delta f = 1$, and how does it differ from vector sensitivity?
+> **Answer:** For a **per-target scalar count query** ($q_u: \mathcal{D} \to \mathbb{N}$), each user in the database can contribute at most 1 crush declaration toward target $u$, giving $\Delta f_{\text{scalar}} = 1$. However, for a **global vector query** evaluated across all campus targets simultaneously, a user with $S=5$ active slots has an $L_1$ vector sensitivity of $\Delta_1 Q = 5$. Our architecture calculates hints on a per-target basis using target-specific privacy allocations, avoiding global vector sensitivity noise inflation.
 
-### Q2: How do you prevent repeated daily releases from exhausting the differential privacy budget?
-> **Answer:** We avoid daily re-queries under standard composition. Instead, we use a **State-Dependent Sparse Vector / Threshold Release** bounded by an epoch budget of $\epsilon_{\text{epoch}} = 1.0$ per semester. Numerical counts are bucketed (e.g., "Around 3", "5+"), locked to a 14-day release epoch, and only updated when the true count crosses an integer delta threshold of $\ge 2$.
+### Q2: Does a 14-day cooldown guarantee differential privacy on its own?
+> **Answer:** No. Cooldowns and delta thresholds are operational safeguards that control query frequency, but a formal $\epsilon$-DP guarantee requires a rigorous **privacy accountant**. We use the **Sparse Vector Technique (SVT)** with an explicit semester budget of $\epsilon_{\text{total}} = 1.0, \delta = 10^{-5}$. Counts are published in coarse noisy buckets, and once the budget is exhausted, releases halt until the next semester epoch.
 
-### Q3: How do you implement simultaneous answer submission without race conditions?
+### Q3: Why retain dissolved matches internally if the user action is "silent unmatching"?
+> **Answer:** Client-facing privacy and internal platform safety are distinct concerns. To protect user dignity on campus, the client interface silently removes the connection without sending failure notifications, preserving mutual plausible deniability. However, to protect users from malicious behavior (harassment, stalking, extortion), the platform must retain a restricted, tamper-evident audit record in an internal Trust & Safety database accessible only under strict RBAC.
+
+### Q4: How do you implement simultaneous answer submission without race conditions?
 > **Answer:** Via an atomic state machine in the database:
 > 1. Each user's submission writes to a private partition (`user_a_response`, `user_b_response`) with submission flags.
 > 2. An answer read endpoint returns `403 Forbidden` unless both flags evaluate to `true` inside an atomic transaction.
 > 3. Once both are committed, the transaction transitions the state to `'revealed'` and emits a single atomic WebSocket/SSE event to both clients.
 
-### Q4: How do you guarantee an expired crush cannot trigger a match?
+### Q5: How do you guarantee an expired crush cannot trigger a match?
 > **Answer:** Every crush declaration carries an explicit `expires_at` timestamp indexed in the database (`expires_at = created_at + INTERVAL '60 days'`). In the swipe evaluation query, the mutual lookup explicitly checks:
 > ```sql
 > SELECT id FROM crushes 
@@ -163,6 +179,3 @@ During technical interviews with founders or senior engineers, be prepared to de
 >   AND status = 'active';
 > ```
 > This guarantees stale entries are mathematically disqualified at query execution time.
-
-### Q5: How do you enforce silent unmatching consistently across both users?
-> **Answer:** We write a tombstone record or update the match state to `status = 'dissolved'`. All feed, match, and message queries enforce `WHERE status != 'dissolved'`. Neither user receives an "unmatched" push notification. To both clients, the state cleanly reverts to appearing as though a match had never taken place, preserving plausible deniability.
