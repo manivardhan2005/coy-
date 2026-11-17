@@ -2,7 +2,7 @@
 
 **Author:** SDE Intern Candidate  
 **Date:** November 2026  
-**Repository Archive:** [coy-sde-assignment.zip](file:///c:/Users/maniv/OneDrive/Desktop/Coy/coy-sde-assignment.zip)  
+**Repository Archive:** [coy-sde-assignment.zip](./coy-sde-assignment.zip)  
 
 ---
 
@@ -22,7 +22,7 @@ This report documents the implementation, its design invariants, and the verific
 ## 2. Backend Security & Reliability Details
 
 ### A. Transaction Queue Error Recovery
-In [src/lib/storage.ts](file:///c:/Users/maniv/OneDrive/Desktop/Coy/src/lib/storage.ts), the transaction queue guarantees subsequent operations execute even if an earlier transaction fails:
+In [src/lib/storage.ts](./src/lib/storage.ts), the transaction queue guarantees subsequent operations execute even if an earlier transaction fails:
 
 ```typescript
 export function recordSwipeSafe(profileId: string, action: SwipeAction): Promise<SwipeResponse> {
@@ -74,14 +74,14 @@ export function saveData(data: StorageData): void {
   4. Rely on distributed locks (e.g., Redis Redlock) only if specific non-database external coordination requirements arise.
 
 ### D. Strict Input Validation & Demo Endpoint Protection
-- **Input Validation ([src/app/api/swipe/route.ts](file:///c:/Users/maniv/OneDrive/Desktop/Coy/src/app/api/swipe/route.ts)):** Rejects non-string profile IDs, empty strings, and invalid action strings with `HTTP 400 Bad Request`.
-- **Demo Endpoint Protection ([src/app/api/reset/route.ts](file:///c:/Users/maniv/OneDrive/Desktop/Coy/src/app/api/reset/route.ts)):** In production environments (`NODE_ENV === 'production'`), the reset endpoint is automatically disabled unless `ENABLE_DEMO_RESET=true` is explicitly provided.
+- **Input Validation ([src/app/api/swipe/route.ts](./src/app/api/swipe/route.ts)):** Rejects non-string profile IDs, empty strings, and invalid action strings with `HTTP 400 Bad Request`.
+- **Demo Endpoint Protection ([src/app/api/reset/route.ts](./src/app/api/reset/route.ts)):** In production environments (`NODE_ENV === 'production'`), the reset endpoint is automatically disabled unless `ENABLE_DEMO_RESET=true` is explicitly provided, with optional `DEMO_RESET_SECRET` header validation.
 
 ---
 
 ## 3. Comprehensive 13-Point Test Suite
 
-The automated test suite in [src/tests/test-backend-logic.mjs](file:///c:/Users/maniv/OneDrive/Desktop/Coy/src/tests/test-backend-logic.mjs) covers:
+The automated test suite in [src/tests/test-backend-logic.mjs](./src/tests/test-backend-logic.mjs) covers:
 
 | Test Case | Description | Scope & Invariant Verified |
 | :--- | :--- | :--- |
@@ -101,7 +101,7 @@ The automated test suite in [src/tests/test-backend-logic.mjs](file:///c:/Users/
 
 ---
 
-## 4. Part A Privacy Engineering Synthesis
+## 4. Part A: Proposed Production Privacy Engineering Design
 
 1. **Scalar vs. Global Sensitivity:**
    - Scalar per-target sensitivity: $\Delta f_{\text{scalar}} = 1$.
