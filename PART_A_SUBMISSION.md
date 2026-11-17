@@ -65,18 +65,16 @@ In pure double-blind matching, the primary failure mode is **Asymmetric Inertia*
   $$\Delta_1 Q = S = 5$$
 
 ##### Proposed Privacy-Budget Allocation Strategy:
-Running independent per-target queries does not bypass privacy composition. An active user declaring up to 5 crushes participates in up to 5 target queries; under standard composition, the privacy losses accumulate across:
-1. Multiple target queries (up to $S=5$).
-2. Multiple hint category evaluations.
+Running independent per-target queries does not automatically eliminate privacy composition. Because a single user can declare up to $S=5$ active crushes across different peers, that user's intent data can contribute to up to 5 distinct target queries. Under composition, privacy loss accumulates across:
+1. Multiple target queries simultaneously (up to $S=5$).
+2. Multiple categorical hint evaluations.
 3. Repeated release epochs over time.
 
-To ensure a rigorous user-level guarantee ($\epsilon_{\text{user}} \le 1.0$), we propose the following budget allocation strategy:
-- **Per-Target Query Budget Slicing:** Each individual target query is allocated a fractional sub-budget:
-  $$\epsilon_u \le \frac{\epsilon_{\text{user}}}{S} = \frac{1.0}{5} = 0.20$$
-  ensuring that even in the worst-case scenario where all 5 targets of a user query their counts, the cumulative user-level privacy loss is strictly bounded under $\epsilon_{\text{user}} = 1.0$.
-- **Sparse Vector Release (SVT) within Epoch:** Within each target's allocated budget slice, counts are not released on demand. Instead, the backend uses thresholded noisy testing ($T \in \{3, 5, 8\}$) where negative checks consume minimal budget under advanced composition.
-- **Budget Exhaustion Protocol:** When a target's allocated budget slice is consumed, count updates halt and the client remains frozen on the last published coarse bucket until the next semester epoch reset.
-- *Production Engineering Note:* In a production deployment at scale, this strategy would be managed by a centralized privacy accountant (e.g., using Rényi Differential Privacy or Zero-Concentrated DP) rather than relying solely on operational cooldown heuristics.
+To enforce an overall user-level privacy bound ($\epsilon_{\text{user}} \le 1.0$), we propose the following privacy accounting architecture:
+- **Centralized Privacy Accountant:** Rather than assuming operational cooldowns alone guarantee differential privacy, the system relies on a **centralized privacy accountant** (e.g., using Rényi Differential Privacy or Zero-Concentrated DP composition). The accountant maintains an append-only ledger tracking each contributing user's cumulative privacy loss across all targets and release mechanisms.
+- **Budget Partitioning & Tracking:** Each target query $q_u$ draws from an allocated sub-budget $\epsilon_u \le \frac{\epsilon_{\text{user}}}{S} = \frac{1.0}{5} = 0.20$ per epoch. The accountant continuously evaluates composition across all queries a user's data influences.
+- **State-Dependent Threshold Release:** Within each target's allocated budget slice, raw counts are never published. The backend tests noisy step thresholds ($T \in \{3, 5, 8\}$) using the Sparse Vector Technique (SVT / NumericSparse).
+- **Budget Exhaustion Protocol:** When a user's cumulative privacy budget $\epsilon_{\text{user}}$ reaches the epoch cap, the accountant halts all count-based hints involving that user's data; the target's client interface remains locked to the last published coarse bucket until the semester epoch resets.
 
 #### 3. Temporal Cooldown & Historical Intersection Prevention:
 - **The Threat:** Even if only one hint is active at a time, a user might remember yesterday's hint (*"Someone in Badminton Club"*) and compare it to today's hint (*"Someone graduating in 2026"*), intersecting them to isolate an individual.
